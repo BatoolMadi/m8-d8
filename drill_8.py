@@ -1,21 +1,42 @@
 import numpy as np
 import weaviate
 from sentence_transformers import SentenceTransformer
+import time
 
 
 # Load model once at module level
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = None
 
 
 def embed_text(text: str) -> np.ndarray:
     """Return a 384-dim float32 numpy vector for the input string."""
 
-    v = model.encode(
-        text,
-        convert_to_numpy=True
-    ).astype(np.float32)
+    global model
 
-    return v
+    retries = 3
+    wait_time = 5
+
+    for attempt in range(retries):
+
+        try:
+            if model is None:
+                model = SentenceTransformer("all-MiniLM-L6-v2")
+
+            v = model.encode(
+                text,
+                convert_to_numpy=True
+            ).astype(np.float32)
+
+            return v
+
+        except Exception as e:
+
+            if "429" in str(e) and attempt < retries - 1:
+                print(f"Rate limited. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                wait_time *= 2
+            else:
+                raise e
 
 
 def weaviate_ready(url: str) -> bool:
