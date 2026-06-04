@@ -1,56 +1,110 @@
-"""Module 8 — Core Skills Drill: RAG Basics.
-
-Three operational primitives for RAG: embed a sentence, verify a Weaviate
-connection, ingest a small set of objects with externally-supplied vectors.
-
-Submit by branching `drill-8-rag-basics`, opening a PR, pasting the PR URL
-into TalentLMS → Module 8 → Core Skills Drill.
-"""
-
 import numpy as np
 import weaviate
+from sentence_transformers import SentenceTransformer
+import time
+
+
+# Load model once at module level
+model = None
 
 
 def embed_text(text: str) -> np.ndarray:
-    """Return a 384-dim float32 numpy vector for the input string.
+    """Return a 384-dim float32 numpy vector for the input string."""
 
-    Use sentence-transformers' all-MiniLM-L6-v2.
+    global model
 
-    Hint:
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        v = model.encode(text, convert_to_numpy=True).astype(np.float32)
-    """
-    # TODO: load all-MiniLM-L6-v2 (consider loading once at module level for speed)
-    # TODO: encode the text and return as float32 numpy array of shape (384,)
-    raise NotImplementedError("embed_text is not yet implemented")
+    retries = 3
+    wait_time = 5
+
+    for attempt in range(retries):
+
+        try:
+            if model is None:
+                model = SentenceTransformer("all-MiniLM-L6-v2")
+
+            v = model.encode(
+                text,
+                convert_to_numpy=True
+            ).astype(np.float32)
+
+            return v
+
+        except Exception as e:
+
+            if "429" in str(e) and attempt < retries - 1:
+                print(f"Rate limited. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                wait_time *= 2
+            else:
+                raise e
 
 
 def weaviate_ready(url: str) -> bool:
-    """Return True if Weaviate at `url` is reachable and ready, else False.
+    """Return True if Weaviate at `url` is reachable and ready."""
 
-    Wrap in try/except so a non-running Weaviate returns False rather than
-    raising a connection error.
-    """
-    # TODO: try weaviate.Client(url).is_ready(); return False on any exception
-    raise NotImplementedError("weaviate_ready is not yet implemented")
+    try:
+        client = weaviate.Client(url)
+        return client.is_ready()
+
+    except Exception:
+        return False
 
 
-def ingest_corpus(client: weaviate.Client, class_name: str, items: list[dict]) -> int:
-    """Ingest items into the named class. Return the count of ingested objects.
+def ingest_corpus(
+    client: weaviate.Client,
+    class_name: str,
+    items: list[dict]
+) -> int:
+    """Ingest items into the named class."""
 
-    Each item is {"title": str, "text": str, "vector": list[float]}.
+    # Check existing schema/classes
+    existing_classes = [
+        c["class"]
+        for c in client.schema.get()["classes"]
+    ] if client.schema.get().get("classes") else []
 
-    If the class does not exist, create it with:
-      - properties: title (text), text (text, BM25-indexed)
-      - vectorizer: "none"
+    # Create class if it doesn't exist
+    if class_name not in existing_classes:
 
-    Use client.batch (or with client.batch as batch:) and remember to flush.
-    Verify the count via:
-      client.query.aggregate(class_name).with_meta_count().do()
-    """
-    # TODO: if class_name not in client.schema, create it (vectorizer "none")
-    # TODO: batch-add each item with vector=item["vector"]
-    # TODO: flush the batch
-    # TODO: query the aggregate count and return it
-    raise NotImplementedError("ingest_corpus is not yet implemented")
+        schema = {
+            "class": class_name,
+            "vectorizer": "none",
+            "properties": [
+                {
+                    "name": "title",
+                    "dataType": ["text"]
+                },
+                {
+                    "name": "text",
+                    "dataType": ["text"]
+                }
+            ]
+        }
+
+        client.schema.create_class(schema)
+
+    # Batch ingest
+    with client.batch as batch:
+
+        for item in items:
+
+            batch.add_data_object(
+                data_object={
+                    "title": item["title"],
+                    "text": item["text"]
+                },
+                class_name=class_name,
+                vector=item["vector"]
+            )
+
+    # Verify count
+    result = (
+        client.query
+        .aggregate(class_name)
+        .with_meta_count()
+        .do()
+    )
+
+    count = result["data"]["Aggregate"][class_name][0]["meta"]["count"]
+
+    return count
